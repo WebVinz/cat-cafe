@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Cafe Mock — 16:9, Grid, Collision (Cute Shroom Player)</title>
+<style>
+  :root{
+    --cols: 20;
+    --stage-maxw: 1280px;
+    --stage-vw: 95vw;
+    --bg-dark: #0f172a;
+    --tile: 64px; /* diupdate via JS */
+  }
+  html,body{height:100%}
+  body{margin:0;background:var(--bg-dark);font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#fff}
+
+  /* Stage 16:9 */
+  #stage{
+    width:min(var(--stage-maxw),var(--stage-vw));
+    aspect-ratio:16/9;
+    margin:24px auto 96px;
+    position:relative;
+    border-radius:18px;
+    overflow:hidden;
+    box-shadow:0 20px 60px rgba(0,0,0,.35)
+  }
+  #scene{position:absolute;inset:0}
+
+  /* Lantai kayu pixel */
+  .wood{
+    background-color:#d7b07a;
+    image-rendering: pixelated;
+    background-image:
+      repeating-linear-gradient(0deg,
+        #e9c98e 0px, #e9c98e 12px,
+        #d7b07a 12px, #d7b07a 28px
+      ),
+      repeating-linear-gradient(90deg,
+        #d7b07a 0px,  #d7b07a 56px,
+        #cfa86f 56px, #cfa86f 112px
+      );
+    background-size:auto, auto;
+  }
+
+  /* Dinding atas pixel */
+  .wall{
+    position:absolute;
+    left:0; right:0; top:0;
+    height: calc(var(--tile) * 2.25);
+    image-rendering: pixelated;
+    background:
+      repeating-linear-gradient(90deg,
+        #efcfa1 0px,  #efcfa1 24px,
+        #e5c492 24px, #e5c492 48px
+      ),
+      repeating-linear-gradient(0deg,
+        #f3d7ac 0px,  #f3d7ac 22px,
+        #eacb9e 22px, #eacb9e 44px
+      );
+    border-bottom: 4px solid #8b5e34;
+    box-shadow: inset 0 -6px 0 #c08f58;
+    z-index: 1;
+  }
+
+  /* UI */
+  .coinbar{
+    position:absolute;right:16px;top:16px;z-index:50;
+    display:flex;gap:8px;align-items:center;
+    background:#0b1220;color:#fff;padding:8px 12px;border-radius:999px;
+    box-shadow:0 6px 24px rgba(0,0,0,.35)
+  }
+  .dock{position:absolute;left:0;right:0;bottom:16px;z-index:50;display:flex;justify-content:center;gap:24px}
+  .dock .btn{width:64px;height:64px;border-radius:999px;background:rgba(0,0,0,.25);color:#fff;border:none;font-size:24px;display:grid;place-items:center;backdrop-filter:blur(2px)}
+  .dock label{display:block;text-align:center;margin-top:6px;font-size:12px;color:#fff;opacity:.8}
+
+  /* Sprites */
+  .sprite{position:absolute;image-rendering:pixelated;user-select:none}
+  .label{
+    position:absolute;background-color:rgba(255,255,255,.85);color:#111;
+    border:1px solid rgba(0,0,0,.15);border-radius:6px;padding:2px 6px;
+    font-weight:800;letter-spacing:2px;font-size:10px;user-select:none
+  }
+  .z1{z-index:1}.z2{z-index:2}.z3{z-index:3}.z5{z-index:5}
+
+  /* Debug grid (opsional) */
+  .griddebug{
+    background-image:linear-gradient(#00000010 1px, transparent 1px),
+                     linear-gradient(90deg,#00000010 1px, transparent 1px);
+    background-size:var(--tile) var(--tile)
+  }
+</style>
+</head>
+<body>
+
+<script>
+  /* ASSETS */
+  window.ASSETS = {
+    player: "Cute Shroom 4_result.webp",
+    chef:   "chef_result.webp",
+    table:        "table_top_result.webp",
+    tableLongV:   "table_long_vertical_result.webp",
+    tableLongH:   "table_long_horizontal_result.webp",
+    chair:        "chair_front_result.webp",
+    stove:        "stove_front_result.webp",
+    trash:        "trash_bin.png"
+  };
+</script>
+
+<div id="stage" class="wood">
+  <div id="scene">
+    <!-- DINDING ATAS -->
+    <div class="wall"></div>
+  </div>
+
+  <!-- UI -->
+  <div class="coinbar"><span>🪙</span><strong id="coin">9999</strong></div>
+  <div class="dock">
+    <div style="text-align:center"><button class="btn">🍄</button><label>Table</label></div>
+    <div style="text-align:center"><button class="btn">🐱</button><label>Hire Worker</label></div>
+    <div style="text-align:center"><button class="btn">🍲</button><label>Add Menu</label></div>
+    <div style="text-align:center"><button class="btn">⚙️</button><label>Settings</label></div>
+  </div>
+</div>
+
+<script>
+  /* ===== Grid & util (ASLI) ===== */
+  const COLS = 20;
+  const stage = document.getElementById('stage');
+  const scene = document.getElementById('scene');
+  const AS = window.ASSETS;
+
+  const items = []; // {el,col,row,w,h,z,isLabel,isPlayer,isSheet}
+  let colliders = [];
+
+  const T  = () => stage.clientWidth / COLS; // px per tile
+  const addLabel  = (txt,c,r)=>{const e=document.createElement('div');e.className='label';e.textContent=txt;items.push({el:e,col:c,row:r,w:0,h:0,z:9,isLabel:true});scene.appendChild(e);return e;}
+
+  function addSprite({src,col,row,w=1,h=1,z=2,id=null,label=null}){
+    const el=new Image(); el.className=`sprite z${z}`; el.src=src; if(id) el.id=id; el.draggable=false;
+    scene.appendChild(el);
+    const rec={el,col,row,w,h,z,isLabel:false,isPlayer:false,isSheet:false};
+    items.push(rec);
+    if(label) addLabel(label,col,row-0.3);
+    return rec;
+  }
+
+  /* === Player spritesheet helper (ANIMASI) === */
+  const SHEET = {
+    fw: 32, fh: 32,
+    cols: 5, rows: 5,
+    frames: 4,
+    rowDown: 1, rowLeft: 1, rowRight: 2, rowUp: 2,
+    fps: 10
+  };
+
+  function addPlayerSheet({src,col,row,w=1,h=1,z=5,id='player'}){
+    const el=document.createElement('div');
+    el.className=`sprite z${z}`;
+    el.style.backgroundImage=`url("${src}")`;
+    el.style.backgroundRepeat='no-repeat';
+    el.style.imageRendering='pixelated';
+    scene.appendChild(el);
+    const rec={el,col,row,w,h,z,isLabel:false,isPlayer:true,isSheet:true,dir:'down',frame:0};
+    items.push(rec);
+    return rec;
+  }
+
+  function applyPlayerBGSize(rec){
+    const tile=T();
+    const dispW = rec.w*tile, dispH = rec.h*tile;
+    const scaleX = dispW / SHEET.fw;
+    const scaleY = dispH / SHEET.fh;
+    el = rec.el;
+    el.style.width = dispW+'px';
+    el.style.height= dispH+'px';
+    el.style.backgroundSize = `${SHEET.cols*SHEET.fw*scaleX}px ${SHEET.rows*SHEET.fh*scaleY}px`;
+  }
+
+  function setPlayerFrame(rec, frame, dirRow){
+    const tile=T();
+    const dispW = rec.w*tile, dispH = rec.h*tile;
+    const scaleX = dispW / SHEET.fw;
+    const scaleY = dispH / SHEET.fh;
+    const bx = -frame*SHEET.fw*scaleX;
+    const by = -dirRow*SHEET.fh*scaleY;
+    rec.el.style.backgroundPosition = `${bx}px ${by}px`;
+  }
+
+  function layout(){
+    const tile=T(); document.documentElement.style.setProperty('--tile',tile+'px');
+    for(const it of items){
+      const x=(it.col-1)*tile, y=(it.row-1)*tile;
+      if(it.isLabel){ it.el.style.left=(x-10)+'px'; it.el.style.top=(y-20)+'px'; continue; }
+      it.el.style.left=x+'px'; it.el.style.top=y+'px';
+      it.el.style.width=(it.w*tile)+'px'; it.el.style.height=(it.h*tile)+'px';
+      it.el.style.zIndex=it.z;
+      if(it.isSheet) applyPlayerBGSize(it);
+    }
+    rebuildColliders();
+  }
+
+  /* >>>>>> Tambahan kecil: masukkan WALL sebagai collider <<<<<< */
+  const wallEl = document.querySelector('.wall');
+
+  function rebuildColliders(){
+    colliders = items.filter(it=>!it.isLabel && !it.isPlayer);
+    if (wallEl) colliders.push({el: wallEl}); // dinding jadi penghalang
+  }
+  /* <<<<<< end tambahan <<<<<< */
+
+  const rect = r => ({x:r.el.offsetLeft,y:r.el.offsetTop,w:r.el.clientWidth,h:r.el.clientHeight});
+
+  /* Kursi sekitar meja */
+  function addChairsAround(tableRec, opts){
+    const c=tableRec.col, r=tableRec.row, w=tableRec.w||2, h=tableRec.h||1;
+    if(opts?.top)    for(let i=0;i<w;i++) addSprite({src:AS.chair, col:c+i,   row:r-1});
+    if(opts?.bottom) for(let i=0;i<w;i++) addSprite({src:AS.chair, col:c+i,   row:r+1});
+    if(opts?.left)   for(let i=0;i<h;i++) addSprite({src:AS.chair, col:c-1,   row:r+i});
+    if(opts?.right)  for(let i=0;i<h;i++) addSprite({src:AS.chair, col:c+w,   row:r+i});
+  }
+
+  /* LAYOUT (tetap) */
+  const tL2 = addSprite({src:AS.table, col:4, row:6, w:2, h:1});  addChairsAround(tL2, {top:true, bottom:true});
+  const tL3 = addSprite({src:AS.table, col:4, row:9, w:2, h:1});  addChairsAround(tL3, {top:true, bottom:true});
+
+  const tL5 = addSprite({src:AS.table, col:9, row:6, w:2, h:1});  addChairsAround(tL5, {top:true, bottom:true});
+  const tL6 = addSprite({src:AS.table, col:9, row:9, w:2, h:1});  addChairsAround(tL6, {top:true, bottom:true});
+
+  addSprite({src:AS.tableLongV, col:15, row:3, w:1, h:3});
+  addSprite({src:AS.stove, col:16, row:3});
+  addSprite({src:AS.trash, col:20, row:8, w:1, h:1});
+  addSprite({src:AS.stove, col:17, row:3});
+  addSprite({src:AS.tableLongH, col:17, row:7, w:4, h:1});
+
+  // Player
+  const player = addPlayerSheet({src:AS.player, col:12, row:6, w:1, h:1, z:5});
+
+  /* Movement + Collision + Anim (asli) */
+  const keys = new Set();
+  window.addEventListener('keydown', e=>{
+    const k=e.key.toLowerCase();
+    if(['w','a','s','d','arrowup','arrowleft','arrowdown','arrowright'].includes(k)){
+      keys.add(k); e.preventDefault();
+    }
+  });
+  window.addEventListener('keyup', e=> keys.delete(e.key.toLowerCase()));
+
+  function willCollide(nx,ny,pw,ph){
+    for(const c of colliders){
+      const r = rect(c);
+      const overlap = !(nx+pw<=r.x || nx>=r.x+r.w || ny+ph<=r.y || ny>=r.y+r.h);
+      if(overlap) return true;
+    }
+    return false;
+  }
+
+  let animAcc=0;
+  function loop(t){
+    if(!loop.t) loop.t=t; const dt=(t-loop.t)/1000; loop.t=t;
+    const speed = T()*6;
+    let dx=0, dy=0;
+    if(keys.has('a')||keys.has('arrowleft'))  dx-=1;
+    if(keys.has('d')||keys.has('arrowright')) dx+=1;
+    if(keys.has('w')||keys.has('arrowup'))    dy-=1;
+    if(keys.has('s')||keys.has('arrowdown'))  dy+=1;
+
+    if(dx||dy){
+      const len=Math.hypot(dx,dy)||1; dx/=len; dy/=len;
+      const pw=player.el.clientWidth, ph=player.el.clientHeight;
+      let nx=player.el.offsetLeft+dx*speed*dt;
+      let ny=player.el.offsetTop +dy*speed*dt;
+      nx=Math.max(0,Math.min(stage.clientWidth -pw,nx));
+      ny=Math.max(0,Math.min(stage.clientHeight-ph,ny));
+      if(!willCollide(nx,ny,pw,ph)){
+        player.el.style.left=nx+'px'; player.el.style.top=ny+'px';
+      }
+      if(Math.abs(dx) > Math.abs(dy)){ player.dir = dx<0 ? 'left' : 'right'; }
+      else { player.dir = dy<0 ? 'up' : 'down'; }
+
+      animAcc += dt;
+      const frameDur = 1/Math.max(1,SHEET.fps);
+      if(animAcc >= frameDur){
+        animAcc -= frameDur;
+        player.frame = (player.frame+1) % SHEET.frames;
+      }
+    } else {
+      player.frame = 0;
+    }
+
+    const rowMap = {down:SHEET.rowDown, left:SHEET.rowLeft, right:SHEET.rowRight, up:SHEET.rowUp};
+    setPlayerFrame(player, player.frame, rowMap[player.dir] ?? SHEET.rowDown);
+
+    requestAnimationFrame(loop);
+  }
+
+  /* Start */
+  layout();
+  window.addEventListener('resize', layout);
+  requestAnimationFrame(loop);
+</script>
+</body>
+</html>
